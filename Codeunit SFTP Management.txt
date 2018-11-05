@@ -1,0 +1,414 @@
+OBJECT Codeunit 50069 SFTP Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11/04/18;
+    Time=11:47:40 PM;
+    Modified=Yes;
+    Version List=Sbinesh;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            IF NOT OnRunValidate THEN BEGIN
+              //Handle your Exception
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WinSCPSesh@1000000001 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.Session";
+      WinSCPSessionOptions@1000000002 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.SessionOptions";
+      WinSCPTransferOptions@1000000003 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.TransferOptions";
+      WinSCPTransferResults@1000000004 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.TransferOperationResult";
+      WinSCPTransferResumeSupport@1000000005 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.TransferResumeSupport";
+      WinSCPTransferResumeSupportState@1000000006 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.TransferResumeSupportState";
+      MoveFileDotNet@1000000007 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.File";
+      WinSCPProtocol@1000000008 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.Protocol";
+      WinSCPFtpSecure@1000000009 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.FtpSecure";
+      WinSCPRemoteInfoColl@1000000010 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.RemoteDirectoryInfo";
+      WinSCPRemoteInfo@1000000011 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.RemoteFileInfo";
+      DirectoryCheck@1000000013 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Directory";
+      FileManagement@1000000012 : Codeunit 419;
+      FileG@1000000019 : Record 2000000022;
+      DocumentSetup@1000000000 : Record 50065;
+      WinSCP_Executable_Path@1000000029 : TextConst 'ENU=C:\Program Files (x86)\WinSCP\WinSCP.exe';
+      HasDocumentSetup@1000000015 : Boolean;
+      ExportFile@1000000016 : Text;
+      SendItemstoWebsite@1000000018 : Record 50104;
+      SendItemtoWebsiteErrorsLog@1000000017 : Record 50055;
+
+    PROCEDURE GetDocumentSetup@1000000000();
+    BEGIN
+      IF NOT HasDocumentSetup THEN
+        DocumentSetup.GET;
+    END;
+
+    [TryFunction]
+    LOCAL PROCEDURE OnRunValidate@1000000019();
+    BEGIN
+      GetDocumentSetup;
+      SendItemstoWebsite.RESET;
+      SendItemstoWebsite.SETCURRENTKEY("Product Type","Process Status","Document No.");
+      SendItemstoWebsite.SETRANGE("Product Type", SendItemstoWebsite."Product Type"::Documents);
+      SendItemstoWebsite.SETRANGE("Process Status",SendItemstoWebsite."Process Status"::Pending);
+      SendItemstoWebsite.SETFILTER("Document No.",'<>%1', '');
+      IF SendItemstoWebsite.FINDSET THEN BEGIN
+        REPEAT
+          CLEARLASTERROR;
+          IF NOT ExportDocument(SendItemstoWebsite."Document No.") THEN
+            CreateSendItemtoWebsiteErrorsLog('Error in Exporting File');
+        UNTIL SendItemstoWebsite.NEXT = 0;
+      END;
+    END;
+
+    [TryFunction]
+    PROCEDURE ExportDocument@1000000016(DocNoP@1000000002 : Code[20]);
+    VAR
+      DocumentL@1000000000 : Record 50066;
+      OutStream@1000000005 : OutStream;
+      InStream@1000000004 : InStream;
+      OutputFile@1000000003 : File;
+    BEGIN
+      DocumentL.GET(DocNoP);
+      IF DocumentL.CALCFIELDS(Content) THEN BEGIN
+        IF DocumentL.Content.HASVALUE THEN BEGIN
+          ExportFile := DocumentSetup."Temp Path" + DocumentL."No." + '.' + DocumentL."File Extension";
+          IF EXISTS(ExportFile) THEN ERASE(ExportFile);
+          OutputFile.WRITEMODE(TRUE);
+          OutputFile.CREATE(ExportFile);
+          OutputFile.CREATEOUTSTREAM(OutStream);
+          DocumentL.Content.CREATEINSTREAM(InStream);
+          IF NOT COPYSTREAM(OutStream,InStream) THEN ERROR(GETLASTERRORTEXT);
+          OutputFile.CLOSE;
+
+          IF NOT UploadFile(ExportFile) THEN
+            CreateSendItemtoWebsiteErrorsLog('Error on Uploading to SFTP')
+          ELSE
+            CreateSendItemstoWebsite;
+        END;
+      END;
+    END;
+
+    [TryFunction]
+    PROCEDURE UploadFile@1000000003(SourceFileP@1000000000 : Text);
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN BEGIN
+        WinSCPTransferOptions := WinSCPTransferOptions.TransferOptions;
+        WinSCPTransferOptions.TransferMode := 0;
+        WinSCPTransferResumeSupport := WinSCPTransferOptions.ResumeSupport;
+        WinSCPTransferResumeSupport.State(WinSCPTransferResumeSupportState.Off);
+
+        IF WinSCPSesh.FileExists(WinSCPSesh.HomePath()+'uploads/'+FileManagement.GetFileName(SourceFileP)) THEN
+          WinSCPSesh.RemoveFiles(WinSCPSesh.HomePath()+'uploads/'+FileManagement.GetFileName(SourceFileP));
+        WinSCPTransferResults :=
+                  WinSCPSesh.PutFiles(SourceFileP,
+                                      WinSCPSesh.HomePath()+'uploads/',
+                                      FALSE,
+                                      WinSCPTransferOptions
+                                      );
+      END ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+    END;
+
+    [TryFunction]
+    PROCEDURE UploadFiles@1000000001();
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN BEGIN
+        WinSCPTransferOptions := WinSCPTransferOptions.TransferOptions;
+        WinSCPTransferOptions.TransferMode := 0;
+        WinSCPTransferResumeSupport := WinSCPTransferOptions.ResumeSupport;
+        WinSCPTransferResumeSupport.State(WinSCPTransferResumeSupportState.Off);
+
+        FileG.SETRANGE(Path, DocumentSetup."Temp Path");
+        FileG.SETRANGE("Is a file", TRUE);
+        IF FileG.FINDSET THEN
+          REPEAT
+            IF WinSCPSesh.FileExists(WinSCPSesh.HomePath()+'uploads/' + FileG.Name) THEN
+              WinSCPSesh.RemoveFiles(WinSCPSesh.HomePath()+'uploads/' + FileG.Name);
+            WinSCPTransferResults :=
+                      WinSCPSesh.PutFiles(DocumentSetup."Temp Path" + FileG.Name,
+                                          WinSCPSesh.HomePath()+'uploads/',
+                                          FALSE,
+                                          WinSCPTransferOptions
+                                          );
+          UNTIL FileG.NEXT = 0;
+      END ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+    END;
+
+    [TryFunction]
+    PROCEDURE RemoveFile@1000000005(FileNameWithExtensionP@1000000001 : Text);
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN BEGIN
+        IF WinSCPSesh.FileExists(WinSCPSesh.HomePath()+'uploads/'+FileNameWithExtensionP) THEN
+          WinSCPSesh.RemoveFiles(WinSCPSesh.HomePath()+'uploads/'+FileNameWithExtensionP);
+      END ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+    END;
+
+    [TryFunction]
+    PROCEDURE RemoveFiles@1000000009();
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN BEGIN
+        WinSCPRemoteInfoColl := WinSCPSesh.ListDirectory(WinSCPSesh.HomePath()+'uploads/');
+        WinSCPRemoteInfo := WinSCPRemoteInfoColl.Files();
+        FOREACH WinSCPRemoteInfo IN WinSCPRemoteInfoColl.Files DO
+          IF NOT WinSCPRemoteInfo.IsDirectory THEN BEGIN
+            IF WinSCPSesh.FileExists(WinSCPSesh.HomePath()+'uploads/'+WinSCPRemoteInfo.Name()) THEN
+              WinSCPSesh.RemoveFiles(WinSCPSesh.HomePath()+'uploads/'+WinSCPRemoteInfo.Name());
+          END;
+      END ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+    END;
+
+    [TryFunction]
+    PROCEDURE DownloadFile@1000000004(FileNameWithExtensionP@1000000000 : Text);
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN BEGIN
+        WinSCPTransferOptions := WinSCPTransferOptions.TransferOptions;
+        WinSCPTransferOptions.TransferMode := 0;
+        WinSCPTransferResumeSupport := WinSCPTransferOptions.ResumeSupport;
+        WinSCPTransferResumeSupport.State(WinSCPTransferResumeSupportState.Off);
+        WinSCPTransferResults :=
+                WinSCPSesh.GetFiles(WinSCPSesh.HomePath()+'uploads/'+FileNameWithExtensionP,
+                                    DocumentSetup."Temp Path"+'Download\'+FileNameWithExtensionP,
+                                    FALSE,
+                                    WinSCPTransferOptions
+                                    );
+      END ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+    END;
+
+    [TryFunction]
+    PROCEDURE DownloadFiles@1000000013();
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN BEGIN
+        WinSCPTransferOptions := WinSCPTransferOptions.TransferOptions;
+        WinSCPTransferOptions.TransferMode := 0;
+        WinSCPTransferResumeSupport := WinSCPTransferOptions.ResumeSupport;
+        WinSCPTransferResumeSupport.State(WinSCPTransferResumeSupportState.Off);
+        WinSCPTransferResults :=
+                WinSCPSesh.GetFiles(WinSCPSesh.HomePath()+'uploads/',
+                                    DocumentSetup."Temp Path"+'Download\',
+                                    FALSE,
+                                    WinSCPTransferOptions
+                                    );
+      END ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+    END;
+
+    [TryFunction]
+    PROCEDURE MoveFile@1000000002(SourcePathP@1000000000 : Text;TargetPathP@1000000001 : Text);
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN
+        WinSCPSesh.MoveFile(SourcePathP, TargetPathP)
+      ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+    END;
+
+    [TryFunction]
+    PROCEDURE CreateDirectory@1000000008(DirPathP@1000000000 : Text);
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN BEGIN
+        IF NOT WinSCPSesh.FileExists(WinSCPSesh.HomePath()+DirPathP) THEN
+          WinSCPSesh.CreateDirectory(WinSCPSesh.HomePath()+DirPathP);
+      END ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+    END;
+
+    PROCEDURE CountFiles@1000000006() CountR : Integer;
+    BEGIN
+      GetDocumentSetup;
+      WinSCPSessionOptions := WinSCPSessionOptions.SessionOptions();
+      WinSCPSessionOptions.Protocol := WinSCPProtocol.Sftp;
+      WinSCPSessionOptions.HostName := DocumentSetup."SFTP HostName";
+      WinSCPSessionOptions.PortNumber := DocumentSetup."SFTP Port";
+      WinSCPSessionOptions.UserName := DocumentSetup."SFTP User Name";
+      WinSCPSessionOptions.Password := DocumentSetup."SFTP Password";
+      WinSCPSessionOptions.SshHostKeyFingerprint := DocumentSetup."SFTP Host Key";
+
+      WinSCPSesh := WinSCPSesh.Session();
+      WinSCPSesh.ExecutablePath(WinSCP_Executable_Path);
+      WinSCPSesh.Open(WinSCPSessionOptions);
+      IF WinSCPSesh.Opened THEN BEGIN
+        WinSCPRemoteInfoColl := WinSCPSesh.ListDirectory(WinSCPSesh.HomePath()+'uploads/');
+        WinSCPRemoteInfo := WinSCPRemoteInfoColl.Files();
+        CLEAR(CountR);
+        FOREACH WinSCPRemoteInfo IN WinSCPRemoteInfoColl.Files DO
+          IF NOT WinSCPRemoteInfo.IsDirectory THEN
+            CountR += 1;
+      END ELSE ERROR('Connection Failed!');
+
+      IF WinSCPSesh.Opened THEN WinSCPSesh.Dispose();
+      EXIT(CountR);
+    END;
+
+    LOCAL PROCEDURE CreateSendItemtoWebsiteErrorsLog@1000000012(ErrorResponseTypeP@1000000000 : Text[50]);
+    BEGIN
+      SendItemtoWebsiteErrorsLog.INIT;
+      SendItemtoWebsiteErrorsLog."Entry No." := 0;
+      SendItemtoWebsiteErrorsLog."Send Items Entry No." := SendItemstoWebsite."Entry No.";
+      SendItemtoWebsiteErrorsLog."Product Type" := SendItemstoWebsite."Product Type";
+      SendItemtoWebsiteErrorsLog."Item No." := SendItemstoWebsite."Item No.";
+      SendItemtoWebsiteErrorsLog.Type := SendItemstoWebsite.Type;
+      IF STRLEN(GETLASTERRORTEXT) > 250 THEN
+        SendItemtoWebsiteErrorsLog."Error Description" := COPYSTR(GETLASTERRORTEXT,1,250)
+      ELSE
+        SendItemtoWebsiteErrorsLog."Error Description" := GETLASTERRORTEXT;
+      SendItemtoWebsiteErrorsLog."Error Log DateTime" := CURRENTDATETIME;
+      SendItemtoWebsiteErrorsLog."Response Code" := ErrorResponseTypeP;
+      SendItemtoWebsiteErrorsLog.INSERT(TRUE);
+
+      SendItemstoWebsite."Process Status" := SendItemstoWebsite."Process Status"::Failed;
+      SendItemstoWebsite."Processed DateTime" := CURRENTDATETIME;
+      SendItemstoWebsite.MODIFY;
+    END;
+
+    LOCAL PROCEDURE CreateSendItemstoWebsite@1000000014();
+    BEGIN
+      IF EXISTS(ExportFile) THEN ERASE(ExportFile);
+      SendItemstoWebsite."Process Status" := SendItemstoWebsite."Process Status"::" ";
+      SendItemstoWebsite."Processed DateTime" := CURRENTDATETIME;
+      SendItemstoWebsite.MODIFY;
+    END;
+
+    EVENT WinSCPSesh@1000000001::FileTransferred@48(sender@1000000001 : Variant;e@1000000000 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.TransferEventArgs");
+    BEGIN
+    END;
+
+    EVENT WinSCPSesh@1000000001::Failed@49(sender@1000000001 : Variant;e@1000000000 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.FailedEventArgs");
+    BEGIN
+    END;
+
+    EVENT WinSCPSesh@1000000001::OutputDataReceived@50(sender@1000000001 : Variant;e@1000000000 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.OutputDataReceivedEventArgs");
+    BEGIN
+    END;
+
+    EVENT WinSCPSesh@1000000001::FileTransferProgress@51(sender@1000000001 : Variant;e@1000000000 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.FileTransferProgressEventArgs");
+    BEGIN
+    END;
+
+    EVENT WinSCPSesh@1000000001::QueryReceived@52(sender@1000000001 : Variant;e@1000000000 : DotNet "'WinSCPnet, Version=1.5.6.8731, Culture=neutral, PublicKeyToken=2271ec4a3c56d0bf'.WinSCP.QueryReceivedEventArgs");
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------------------------------------------------------------+
+      | Research & Development - by Binesh Kumar Singh                                                         |
+      +--------------------------------------------------------------------------------------------------------+
+      | Job No.     Date      Description                                                                      |
+      +--------------------------------------------------------------------------------------------------------+
+        BKS          10.22.18  Added new object SFTP Management.
+    }
+    END.
+  }
+}
+
